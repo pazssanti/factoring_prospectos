@@ -1,0 +1,20 @@
+# Datos
+data/
+output/
+logs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Entorno
+.env
+*.env
+
+# Windows
+Thumbs.db
+desktop.ini
+
+# VS Code
+.vscode/

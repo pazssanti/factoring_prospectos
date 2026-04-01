@@ -1,0 +1,9 @@
+requests
+pandas
+numpy
+xlsxwriter
+openpyxl
+python-dotenv
+beautifulsoup4
+scikit-learn
+lightgbm
