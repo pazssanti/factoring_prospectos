@@ -20,12 +20,23 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────
 # TRAMOS DE VENTAS SII
 # ─────────────────────────────────────────────────────────────
+# Tramos de ventas SII — Chile (granularidad real del archivo de nómina)
+# Tramos 1-13 ordenados de menor a mayor volumen de ventas anuales.
+# Para factoring, el sweet spot es tramos 2-4 (PyME con flujo real de OC).
 mapa_tramo: dict = {
-    "1": "Micro",
-    "2": "Pequeña",
-    "3": "Mediana",
-    "4": "Grande",
-    "5": "Muy grande",
+    "1":  "Micro (sin ventas)",
+    "2":  "Micro",
+    "3":  "Pequeña baja",
+    "4":  "Pequeña",
+    "5":  "Pequeña alta",
+    "6":  "Mediana baja",
+    "7":  "Mediana",
+    "8":  "Mediana alta",
+    "9":  "Grande",
+    "10": "Grande alta",
+    "11": "Muy grande",
+    "12": "Corporativo",
+    "13": "Holding",
 }
 
 

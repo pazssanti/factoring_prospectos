@@ -246,6 +246,76 @@ def run():
         df["f_concentracion_organismo"] = 50
         print(f"  f_concentracion_organismo: fallback 50 — {exc}")
 
+    # ── FEATURE 14: Crecimiento OC año a año (0-100) ────────────
+    # Empresa que aumenta sus OC necesita más capital de trabajo.
+    # Compara OC de los últimos 12 meses vs los 12 meses anteriores.
+    try:
+        df_growth = pd.read_sql("""
+            SELECT
+                rut_proveedor_norm AS rut_normalizado,
+                SUM(CASE WHEN fechaaceptacion >= date('now', '-12 months')
+                         THEN 1 ELSE 0 END) AS oc_12m,
+                SUM(CASE WHEN fechaaceptacion >= date('now', '-24 months')
+                          AND fechaaceptacion < date('now', '-12 months')
+                         THEN 1 ELSE 0 END) AS oc_12m_ant
+            FROM clean_ordenes
+            WHERE es_aceptada = 1
+            GROUP BY rut_proveedor_norm
+            HAVING oc_12m + oc_12m_ant > 0
+        """, conn)
+
+        def _score_crecimiento(row):
+            prev = row["oc_12m_ant"]
+            curr = row["oc_12m"]
+            if prev == 0 and curr == 0:
+                return 0
+            if prev == 0:
+                return 75   # empresa que recién empieza a tener OC
+            ratio = curr / prev
+            if ratio >= 3.0: return 100
+            if ratio >= 2.0: return 85
+            if ratio >= 1.5: return 70
+            if ratio >= 1.0: return 55
+            if ratio >= 0.5: return 30
+            return 10   # contracción fuerte
+
+        df_growth["f_crecimiento_oc_yoy"] = df_growth.apply(
+            _score_crecimiento, axis=1
+        )
+        df = df.merge(
+            df_growth[["rut_normalizado", "f_crecimiento_oc_yoy"]],
+            on="rut_normalizado", how="left"
+        )
+        df["f_crecimiento_oc_yoy"] = df["f_crecimiento_oc_yoy"].fillna(0)
+        print(f"  f_crecimiento_oc_yoy: {len(df_growth):,} empresas")
+    except Exception as exc:
+        df["f_crecimiento_oc_yoy"] = 0
+        print(f"  f_crecimiento_oc_yoy: fallback 0 — {exc}")
+
+    # ── FEATURE 15: Velocidad de pago de los organismos cliente (0-100) ──
+    # Empresa que vende a organismos que pagan rápido = mejor prospecto
+    # de factoring (el factor puede cobrar en menos tiempo).
+    # Usa tabla plazos_pago_organismos generada por calcular_plazos_pago.py
+    try:
+        df_plazo_cli = pd.read_sql("""
+            SELECT
+                o.rut_proveedor_norm  AS rut_normalizado,
+                AVG(p.score_velocidad_pago) AS f_plazo_pago_cliente
+            FROM clean_ordenes o
+            JOIN plazos_pago_organismos p
+                ON o.codigoorganismopublico = p.codigoorganismo
+            WHERE o.es_aceptada = 1
+            GROUP BY o.rut_proveedor_norm
+        """, conn)
+        df = df.merge(df_plazo_cli, on="rut_normalizado", how="left")
+        df["f_plazo_pago_cliente"] = (
+            df["f_plazo_pago_cliente"].fillna(50).round(1)
+        )
+        print(f"  f_plazo_pago_cliente: {len(df_plazo_cli):,} empresas")
+    except Exception as exc:
+        df["f_plazo_pago_cliente"] = 50
+        print(f"  f_plazo_pago_cliente: fallback 50 — {exc}")
+
     # ── FEATURE 13: Días entre adjudicación y OC (0-100) ────────
     # Menor tiempo → más urgente necesidad de liquidez
     try:
@@ -303,6 +373,7 @@ def run():
         "f_tasa_adjudicacion", "f_especializacion_rubro",
         "f_licitacion_grande_reciente", "f_concentracion_organismo",
         "f_dias_entre_adj_oc",
+        "f_crecimiento_oc_yoy", "f_plazo_pago_cliente",
     ]
 
     # Solo columnas que existen

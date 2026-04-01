@@ -68,22 +68,43 @@ SLEEP_OCDS        = 0.4
 # ─────────────────────────────────────────────────────────────
 # FILTROS DE NEGOCIO — SCORING
 # ─────────────────────────────────────────────────────────────
-TRAMOS_VENTAS_OK = ["2", "3"]
+TRAMOS_VENTAS_OK = ["2", "3", "4"]
 
-SCORE_NIVEL_1 = 70
-SCORE_NIVEL_2 = 45
+SCORE_NIVEL_1 = 65   # bajado de 70: el modelo ahora usa más features
+SCORE_NIVEL_2 = 42
 
-# Pesos del score — 8 features, deben sumar 1.0
-# Definidos aquí para que scoring_prospecto.py no duplique configuración
+# Ticket mínimo para que valga factoring (CLP)
+# OC promedio menor a esto no justifica el costo de operación
+TICKET_MINIMO_FACTORING = 3_000_000   # $3M CLP
+
+# Umbral mínimo de P(win) para mostrar en alertas de pre-adjudicación
+PRED_WIN_THRESHOLD = 55   # %
+
+# Pesos del score — 12 features, deben sumar 1.0
+#
+# Cambios respecto a versión anterior:
+#  - f_capital_negativo bajó de 20% → 7% (señal de riesgo, no solo oportunidad)
+#  - f_monto_oc subió de 5% → 14%  (ticket real de factoring)
+#  - f_oc_reciente subió de 5% → 11% (necesidad activa ahora)
+#  - f_dias_entre_adj_oc NUEVO 10%  (ventana adj→OC = corazón del factoring)
+#  - f_licitacion_grande_reciente NUEVO 8% (contrato grande reciente = urge)
+#  - f_tasa_adjudicacion NUEVO 7%   (empresa que gana = flujo sostenido)
+#  - f_crecimiento_oc_yoy NUEVO 7%  (empresa en expansión = mayor necesidad)
+#  - f_plazo_pago_cliente NUEVO 5%  (trabaja con organismos que pagan rápido)
+#  - f_volumen_oc eliminado (reemplazado por f_monto_oc, más relevante)
 PESOS_SCORING = {
-    "f_historial":         0.25,
-    "f_tramo_ventas":      0.20,
-    "f_capital_negativo":  0.20,
-    "f_antiguedad":        0.10,
-    "f_rubro_prioritario": 0.10,
-    "f_volumen_oc":        0.05,
-    "f_oc_reciente":       0.05,
-    "f_monto_oc":          0.05,
+    "f_historial":                  0.15,
+    "f_tramo_ventas":               0.10,
+    "f_capital_negativo":           0.07,
+    "f_monto_oc":                   0.14,
+    "f_oc_reciente":                0.11,
+    "f_dias_entre_adj_oc":          0.10,
+    "f_licitacion_grande_reciente": 0.08,
+    "f_tasa_adjudicacion":          0.07,
+    "f_crecimiento_oc_yoy":         0.07,
+    "f_plazo_pago_cliente":         0.05,
+    "f_antiguedad":                 0.03,
+    "f_rubro_prioritario":          0.03,
 }
 
 # ─────────────────────────────────────────────────────────────

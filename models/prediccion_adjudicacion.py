@@ -31,11 +31,14 @@ FEATURES_MODELO = [
     "tramo_ventas_num",
     "mismo_region",
     "licitaciones_previas_log",
-    "win_rate_organismo",       # tasa victorias empresa × organismo (temporal)
-    "match_monto",              # monto licitación en rango histórico empresa
-    "especializacion_tipo",     # fracción bids empresa en este tipo
-    "tiene_capital_negativo",
-    "es_convenio_marco",        # dinámica distinta en Convenios Marco
+    "win_rate_organismo",        # tasa victorias empresa × organismo (temporal)
+    "match_monto",               # monto licitación en rango histórico empresa
+    "especializacion_tipo",      # fracción bids empresa en este tipo
+    "participaciones_org_log",   # log(bids previos empresa×organismo) — experiencia
+    "es_convenio_marco",         # dinámica distinta en Convenios Marco
+    # ELIMINADO: tiene_capital_negativo — capital negativo no predice quién gana
+    # una licitación; es señal de necesidad de factoring (scoring), no de capacidad
+    # de ganar (predicción). Su inclusión generaba ruido en el modelo.
 ]
 
 MODELO_PATH      = DATA_DIR / "modelo_adjudicacion.pkl"
@@ -107,11 +110,14 @@ def _aplicar_features(df: pd.DataFrame) -> pd.DataFrame:
         errors="coerce"
     ).fillna(0).clip(0, 1)
 
-    # 8. tiene_capital_negativo
-    cap = df.get("tramo_capital_negativo", pd.Series("", index=idx))
-    out["tiene_capital_negativo"] = (
-        cap.fillna("").astype(str).str.strip()
-        .apply(lambda x: 0 if x in ("", "0", "nan", "None") else 1)
+    # 8. participaciones_org_log — experiencia empresa×organismo
+    # Cuántas veces ha participado la empresa con este organismo específico.
+    # Más participaciones previas = mejor conocimiento del comprador = mayor P(win).
+    out["participaciones_org_log"] = np.log1p(
+        pd.to_numeric(
+            df.get("participaciones_org", pd.Series(0, index=idx)),
+            errors="coerce"
+        ).fillna(0).clip(0)
     )
 
     # 9. es_convenio_marco — default 0
@@ -170,6 +176,11 @@ def preparar_dataset(conn: sqlite3.Connection) -> tuple:
             "wins_previos":   "licitaciones_ganadas",
             "gano":           "adjudicado",
         })
+        # participaciones_org: si no está en el CSV, usar wins_previos como proxy
+        if "participaciones_org" not in df_td.columns:
+            df_td["participaciones_org"] = df_td.get(
+                "licitaciones_ganadas", pd.Series(0, index=df_td.index)
+            )
         fuente_td = f"training_dataset_csv ({n_csv:,} filas)"
     elif n_db >= MIN_REGISTROS:
         df_td = pd.read_sql("""
@@ -178,8 +189,8 @@ def preparar_dataset(conn: sqlite3.Connection) -> tuple:
                 region_empresa,
                 region_licitacion,
                 tramo_ventas,
-                tramo_capital_negativo,
                 wins_previos        AS licitaciones_ganadas,
+                COALESCE(wins_previos, 0) AS participaciones_org,
                 gano                AS adjudicado
             FROM training_dataset
         """, conn)
@@ -205,10 +216,13 @@ def preparar_dataset(conn: sqlite3.Connection) -> tuple:
                 o.n_competidores      AS n_oferentes,
                 o.region_empresa,
                 p.tramo_ventas,
-                p.tramo_capital_negativo,
                 p.licitaciones_ganadas,
                 l.regionunidad        AS region_licitacion,
-                o.adjudicado
+                l.codigoorganismo     AS organismo,
+                o.adjudicado,
+                COUNT(*) OVER (
+                    PARTITION BY o.rut_normalizado, l.codigoorganismo
+                ) AS participaciones_org
             FROM raw_oferentes o
             LEFT JOIN features_prospectos p
                 ON o.rut_normalizado = p.rut_normalizado
@@ -226,8 +240,8 @@ def preparar_dataset(conn: sqlite3.Connection) -> tuple:
             l.rut_proveedor_norm      AS rut_normalizado,
             COALESCE(l.numerooferentes, 3) AS n_oferentes,
             p.tramo_ventas,
-            p.tramo_capital_negativo,
             COALESCE(p.licitaciones_ganadas, 1) AS licitaciones_ganadas,
+            COALESCE(p.licitaciones_ganadas, 1) AS participaciones_org,
             l.regionunidad            AS region_licitacion,
             'LOS LAGOS'               AS region_empresa,
             1                         AS adjudicado
@@ -243,8 +257,8 @@ def preparar_dataset(conn: sqlite3.Connection) -> tuple:
             p.rut_normalizado,
             3           AS n_oferentes,
             p.tramo_ventas,
-            p.tramo_capital_negativo,
             0           AS licitaciones_ganadas,
+            0           AS participaciones_org,
             'LOS LAGOS' AS region_licitacion,
             'LOS LAGOS' AS region_empresa,
             0           AS adjudicado
@@ -517,6 +531,11 @@ def predecir_activas(conn: sqlite3.Connection, clf=None):
         df_emp.assign(_key=1), on="_key"
     ).drop(columns="_key")
     df_cross["region_empresa"] = "LOS LAGOS"
+    # participaciones_org: usar licitaciones_ganadas como proxy de experiencia
+    if "participaciones_org" not in df_cross.columns:
+        df_cross["participaciones_org"] = df_cross.get(
+            "licitaciones_ganadas", pd.Series(0, index=df_cross.index)
+        )
 
     # Enriquecer con features avanzadas desde lookups
     df_cross = _enriquecer_cross(df_cross, lookups)

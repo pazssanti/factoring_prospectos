@@ -131,13 +131,15 @@ def grupo_ingesta_paso() -> list:
 
 
 def grupo_transform() -> list:
-    """Limpieza → cruce de fuentes → construcción de features."""
-    from transform.limpiar_licitaciones import run as run_limpiar
-    from transform.cruzar_fuentes       import run as run_cruzar
-    from transform.construir_features   import run as run_features
+    """Limpieza → cruce → plazos de pago → construcción de features."""
+    from transform.limpiar_licitaciones  import run as run_limpiar
+    from transform.cruzar_fuentes        import run as run_cruzar
+    from transform.calcular_plazos_pago  import run as run_plazos
+    from transform.construir_features    import run as run_features
     return [
         ("transform/limpiar_licitaciones", run_limpiar),
         ("transform/cruzar_fuentes",       run_cruzar),
+        ("transform/calcular_plazos_pago", run_plazos),   # nuevo — antes de features
         ("transform/construir_features",   run_features),
     ]
 
