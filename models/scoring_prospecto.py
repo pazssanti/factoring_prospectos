@@ -255,9 +255,31 @@ def run():
     df["ranking"] = df.index + 1
     df = df.drop(columns=["_urgencia_sort"])
 
+    # ── Enriquecer con estado CRM si la tabla existe ──────────
+    try:
+        df_crm = pd.read_sql("""
+            SELECT rut_normalizado, estado_crm,
+                   ejecutivo         AS crm_ejecutivo,
+                   fecha_ultimo_contacto AS crm_ultimo_contacto,
+                   notas             AS crm_notas,
+                   fecha_proxima_accion  AS crm_proxima_accion
+            FROM crm_contactos
+        """, conn)
+        df = df.merge(df_crm, on="rut_normalizado", how="left")
+        df["estado_crm"] = df["estado_crm"].fillna("PENDIENTE")
+        n_crm = df_crm["rut_normalizado"].nunique()
+        print(f"\n  CRM: {n_crm:,} registros integrados")
+    except Exception:
+        df["estado_crm"] = "PENDIENTE"
+        df["crm_ejecutivo"] = None
+        df["crm_ultimo_contacto"] = None
+        df["crm_notas"] = None
+        df["crm_proxima_accion"] = None
+
     # ── Columnas output ───────────────────────────────────────
     COLS = [
-        "ranking", "nivel", "urgencia_contacto", "ventana_estrategia", "score",
+        "ranking", "nivel", "urgencia_contacto", "ventana_estrategia",
+        "estado_crm", "score",
         "rut_normalizado", "razon_social",
         "comuna", "region",
         "actividad_economica", "actividad_2026", "rubro_economico",
@@ -271,6 +293,8 @@ def run():
         "total_oc", "monto_total_oc", "monto_prom_oc",
         "ultima_oc", "ultima_licitacion",
         "organismos_distintos", "organismos_oc",
+        "crm_ejecutivo", "crm_ultimo_contacto",
+        "crm_notas", "crm_proxima_accion",
         "motivo", "motivo_urgencia",
     ]
     COLS = [c for c in COLS if c in df.columns]

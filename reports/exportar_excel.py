@@ -37,6 +37,7 @@ def preparar_hoja(df: pd.DataFrame) -> pd.DataFrame:
         "ranking":                   "Ranking",
         "urgencia_contacto":         "Urgencia",
         "ventana_estrategia":        "Estrategia",
+        "estado_crm":                "Estado CRM",
         "score":                     "Score",
         "razon_social":              "Empresa",
         "comuna":                    "Ciudad",
@@ -53,8 +54,12 @@ def preparar_hoja(df: pd.DataFrame) -> pd.DataFrame:
         "organismos_distintos":      "Organismos",
         "probabilidad_adjudicacion": "P(ganar licit.)",
         "rut_normalizado":           "RUT",
+        "crm_ejecutivo":             "Ejecutivo CRM",
+        "crm_ultimo_contacto":       "Ultimo contacto",
+        "crm_proxima_accion":        "Proxima accion",
+        "crm_notas":                 "Notas CRM",
         "motivo":                    "Argumento de contacto",
-        "motivo_urgencia":           "Por qué ahora",
+        "motivo_urgencia":           "Por que ahora",
     }
     cols_map = {k: v for k, v in COLS_EXCEL.items()
                 if k in df.columns}
@@ -361,6 +366,172 @@ def escribir_hoja_preadjudicacion(writer, conn: sqlite3.Connection):
     print(f"  Hoja Pre-Adjudicación: {len(df_pred)} prospectos")
 
 
+def escribir_hoja_crm(writer, conn: sqlite3.Connection):
+    """
+    Hoja CRM — métricas de conversión y pipeline comercial.
+    Muestra el embudo: PENDIENTE → CONTACTADO → INTERESADO → PROPUESTA → CLIENTE.
+
+    ¿Con qué datos?
+    Requiere tabla crm_contactos. Si no existe (nunca se corrió
+    ingesta/crm_contactos.py --init), la hoja se omite silenciosamente.
+    """
+    try:
+        df_crm = pd.read_sql("""
+            SELECT
+                c.rut_normalizado,
+                COALESCE(c.razon_social, pr.razon_social)     AS empresa,
+                COALESCE(pr.comuna, '-')                      AS ciudad,
+                c.estado_crm,
+                c.ejecutivo,
+                c.fecha_primer_contacto,
+                c.fecha_ultimo_contacto,
+                c.fecha_proxima_accion,
+                c.notas,
+                COALESCE(pr.score, 0)                         AS score,
+                COALESCE(pr.nivel, '-')                       AS nivel,
+                COALESCE(pr.urgencia_contacto, '-')           AS urgencia,
+                COALESCE(pr.monto_prom_oc, 0)                 AS monto_prom_oc,
+                COALESCE(pr.total_oc, 0)                      AS total_oc,
+                COALESCE(pr.tramo_ventas, '-')                AS tramo_ventas
+            FROM crm_contactos c
+            LEFT JOIN prospectos_rankeados pr
+                ON c.rut_normalizado = pr.rut_normalizado
+            ORDER BY
+                CASE c.estado_crm
+                    WHEN 'INTERESADO'       THEN 1
+                    WHEN 'PROPUESTA_ENVIADA' THEN 2
+                    WHEN 'CONTACTADO'       THEN 3
+                    WHEN 'PENDIENTE'        THEN 4
+                    WHEN 'CLIENTE'          THEN 5
+                    WHEN 'RECHAZADO'        THEN 6
+                    WHEN 'NO_APLICA'        THEN 7
+                    ELSE 8
+                END, pr.score DESC
+        """, conn)
+    except Exception:
+        return   # tabla no existe aún
+
+    if df_crm.empty:
+        return
+
+    wb = writer.book
+    color = "#E65100"
+
+    # Métricas de embudo
+    total       = len(df_crm)
+    n_pend      = (df_crm["estado_crm"] == "PENDIENTE").sum()
+    n_cont      = (df_crm["estado_crm"] == "CONTACTADO").sum()
+    n_inter     = (df_crm["estado_crm"] == "INTERESADO").sum()
+    n_prop      = (df_crm["estado_crm"] == "PROPUESTA_ENVIADA").sum()
+    n_cliente   = (df_crm["estado_crm"] == "CLIENTE").sum()
+    n_rechazado = (df_crm["estado_crm"] == "RECHAZADO").sum()
+
+    # Hoja resumen funnel primero
+    ws_funnel = wb.add_worksheet("CRM - Embudo")
+    fmt_t  = wb.add_format({"bold": True, "font_size": 14, "font_color": color})
+    fmt_s  = wb.add_format({"italic": True, "font_color": "#888888"})
+    fmt_hdr = wb.add_format({"bold": True, "bg_color": color,
+                             "font_color": "white", "border": 1})
+    fmt_v   = wb.add_format({"align": "right", "bold": True, "border": 1})
+    fmt_lbl = wb.add_format({"border": 1})
+    fmt_pct = wb.add_format({"align": "right", "font_color": "#1565C0", "border": 1})
+
+    ws_funnel.write(0, 0, "EMBUDO COMERCIAL — Patagonia Factoring SpA", fmt_t)
+    ws_funnel.write(1, 0,
+                    f"Total prospectos: {total} | "
+                    f"Generado: {datetime.now().strftime('%d/%m/%Y %H:%M')}",
+                    fmt_s)
+
+    filas_funnel = [
+        ("Etapa", "N°", "% del total"),
+        ("PENDIENTE (no contactados)",   n_pend,      f"{n_pend/max(total,1)*100:.1f}%"),
+        ("CONTACTADO",                   n_cont,      f"{n_cont/max(total,1)*100:.1f}%"),
+        ("INTERESADO",                   n_inter,     f"{n_inter/max(total,1)*100:.1f}%"),
+        ("PROPUESTA ENVIADA",            n_prop,      f"{n_prop/max(total,1)*100:.1f}%"),
+        ("CLIENTE (convertido)",         n_cliente,   f"{n_cliente/max(total,1)*100:.1f}%"),
+        ("RECHAZADO",                    n_rechazado, f"{n_rechazado/max(total,1)*100:.1f}%"),
+        ("", "", ""),
+        ("Tasa de conversión (Clientes/Contactados)",
+         f"{n_cliente/max(n_cont+n_inter+n_prop+n_cliente,1)*100:.1f}%", ""),
+    ]
+
+    for i, (lbl, val, pct) in enumerate(filas_funnel):
+        row_idx = i + 3
+        if lbl == "Etapa":
+            ws_funnel.write(row_idx, 0, lbl, fmt_hdr)
+            ws_funnel.write(row_idx, 1, val, fmt_hdr)
+            ws_funnel.write(row_idx, 2, pct, fmt_hdr)
+        else:
+            ws_funnel.write(row_idx, 0, lbl, fmt_lbl)
+            ws_funnel.write(row_idx, 1, val, fmt_v)
+            ws_funnel.write(row_idx, 2, pct, fmt_pct)
+
+    ws_funnel.set_column(0, 0, 45)
+    ws_funnel.set_column(1, 1, 10)
+    ws_funnel.set_column(2, 2, 15)
+
+    # Hoja detalle CRM
+    fmt_hdr2 = wb.add_format({"bold": True, "bg_color": color,
+                              "font_color": "white", "border": 1, "align": "center"})
+    fmt_inter = wb.add_format({"bg_color": "#FFF9C4", "border": 1})
+    fmt_cli   = wb.add_format({"bg_color": "#C8E6C9", "border": 1})
+    fmt_rec   = wb.add_format({"bg_color": "#FFCDD2", "border": 1})
+    fmt_par   = wb.add_format({"bg_color": "#F5F5F5", "border": 1})
+    fmt_norm2 = wb.add_format({"border": 1})
+
+    nombres_col = {
+        "rut_normalizado":      "RUT",
+        "empresa":              "Empresa",
+        "ciudad":               "Ciudad",
+        "estado_crm":           "Estado CRM",
+        "ejecutivo":            "Ejecutivo",
+        "fecha_ultimo_contacto":"Ult. contacto",
+        "fecha_proxima_accion": "Prox. accion",
+        "score":                "Score",
+        "nivel":                "Nivel",
+        "monto_prom_oc":        "Monto prom OC",
+        "notas":                "Notas",
+    }
+    df_out = df_crm[list(nombres_col.keys())].rename(columns=nombres_col).copy()
+    df_out["Monto prom OC"] = df_out["Monto prom OC"].apply(formatear_monto)
+
+    df_out.to_excel(writer, sheet_name="CRM - Detalle", startrow=3, index=False)
+    ws_det = writer.sheets["CRM - Detalle"]
+    ws_det.write(0, 0, "CRM DETALLE — Seguimiento de prospectos", fmt_t)
+    ws_det.write(1, 0,
+                 f"{len(df_out)} registros | "
+                 f"Generado: {datetime.now().strftime('%d/%m/%Y %H:%M')}",
+                 fmt_s)
+
+    for ci, cn in enumerate(df_out.columns):
+        ws_det.write(3, ci, cn, fmt_hdr2)
+
+    color_fila = {
+        "INTERESADO": fmt_inter, "PROPUESTA_ENVIADA": fmt_inter,
+        "CLIENTE": fmt_cli, "RECHAZADO": fmt_rec, "NO_APLICA": fmt_rec,
+    }
+    for ri in range(len(df_out)):
+        estado = str(df_crm.iloc[ri]["estado_crm"])
+        fmt = color_fila.get(estado, fmt_par if ri % 2 == 0 else fmt_norm2)
+        for ci in range(len(df_out.columns)):
+            val = df_out.iloc[ri, ci]
+            try:
+                val = "-" if pd.isna(val) else val
+            except (TypeError, ValueError):
+                pass
+            ws_det.write(ri + 4, ci, val, fmt)
+
+    for ci, cn in enumerate(df_out.columns):
+        max_w = max(len(str(cn)),
+                    df_out[cn].astype(str).str.len().max()
+                    if len(df_out) > 0 else 10)
+        ws_det.set_column(ci, ci, min(max_w + 3, 50))
+
+    ws_det.freeze_panes(4, 0)
+    print(f"  Hoja CRM: {total} registros | {n_cliente} clientes | "
+          f"{n_inter} interesados | {n_pend} pendientes")
+
+
 def run():
     print("=" * 55)
     print("reports/exportar_excel.py")
@@ -434,9 +605,10 @@ def run():
             "NIVEL 3 - Con OC", "#4A148C",
             "NIVEL 3 — Con historial OC, score bajo")
 
-        # Hoja 5 y 6 — nuevas
+        # Hojas 5, 6, 7 — nuevas
         escribir_hoja_plazos(writer, conn)
         escribir_hoja_preadjudicacion(writer, conn)
+        escribir_hoja_crm(writer, conn)
 
         # Hoja Resumen — dinámica desde PESOS_SCORING
         wb = writer.book
@@ -535,12 +707,14 @@ def run():
 
     conn.close()
     print(f"\nExcel guardado en: {EXCEL_OUTPUT}")
-    print(f"  Hoja 1 — Nivel 1:           {len(df_n1)} empresas")
-    print(f"  Hoja 2 — Nivel 2:           {len(df_n2)} empresas")
-    print(f"  Hoja 3 — Nivel 3:           {len(df_n3)} empresas")
-    print(f"  Hoja 4 — Pre-Adjudicación:  ver log arriba")
-    print(f"  Hoja 5 — Plazos de Pago:    ver log arriba")
-    print(f"  Hoja 6 — Resumen ejecutivo")
+    print(f"  Hoja 1 — Nivel 1:            {len(df_n1)} empresas")
+    print(f"  Hoja 2 — Nivel 2:            {len(df_n2)} empresas")
+    print(f"  Hoja 3 — Nivel 3:            {len(df_n3)} empresas")
+    print(f"  Hoja 4 — Pre-Adjudicación:   ver log arriba")
+    print(f"  Hoja 5 — Plazos de Pago:     ver log arriba")
+    print(f"  Hoja 6 — CRM Embudo:         ver log arriba")
+    print(f"  Hoja 7 — CRM Detalle:        ver log arriba")
+    print(f"  Hoja 8 — Resumen ejecutivo")
 
 
 if __name__ == "__main__":

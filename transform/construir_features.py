@@ -246,7 +246,76 @@ def run():
         df["f_concentracion_organismo"] = 50
         print(f"  f_concentracion_organismo: fallback 50 — {exc}")
 
-    # ── FEATURE 14: Crecimiento OC año a año (0-100) ────────────
+    # ── FEATURE 14: Estacionalidad presupuestaria (0-100) ────────
+    # El presupuesto público chileno se concentra en ciertos meses:
+    #   Oct-Dic: cierre de año presupuestario → máximo gasto (score 100)
+    #   Mar-Abr: inicio de proyectos post-verano → alto (75)
+    #   May-Jun: actividad normal → medio (60)
+    #   Ene-Feb: presupuesto recién aprobado, trámites lentos → bajo (45)
+    #   Jul-Sep: mitad de año, lentitud en muchos organismos → bajo (40)
+    #
+    # ¿Con qué datos?
+    # Esta feature NO necesita datos históricos — se calcula sobre el mes
+    # ACTUAL de ejecución. Es correcta con los datos que ya tenemos.
+    # Se recalcula automáticamente cada vez que corre el pipeline.
+    _mes_actual = hoy.month
+    _score_mes = {
+        1: 45,  # Enero  — presupuesto aprobado, tramitación lenta
+        2: 45,  # Febrero — aún arranque del año
+        3: 75,  # Marzo  — proyectos nuevos activos
+        4: 75,  # Abril  — proyectos nuevos activos
+        5: 60,  # Mayo   — actividad normal
+        6: 60,  # Junio  — actividad normal
+        7: 40,  # Julio  — lentitud mid-year
+        8: 40,  # Agosto — lentitud mid-year
+        9: 50,  # Sept   — preparación cierre año
+        10: 90, # Oct    — cierre presupuestario inminente
+        11: 100,# Nov    — máximo gasto público del año
+        12: 95, # Dic    — último mes presupuesto, gastar o perder
+    }
+    df["f_estacionalidad"] = _score_mes.get(_mes_actual, 50)
+    print(f"  f_estacionalidad: mes={_mes_actual} → score={_score_mes.get(_mes_actual,50)}")
+
+    # ── FEATURE 15: Actividad histórica en el trimestre actual (0-100) ──
+    # ¿Esta empresa suele tener OC en los meses del trimestre actual?
+    # Alta concentración histórica en el trimestre actual = mayor probabilidad
+    # de que necesite factoring ahora.
+    #
+    # ¿Con qué datos?
+    # Requiere fechas de OC históricas (clean_ordenes). Disponible.
+    # LIMITACIÓN: si la empresa tiene pocas OC (<3), este feature es poco
+    # confiable y se imputa con 50 (neutral).
+    _trimestre_actual = (_mes_actual - 1) // 3 + 1  # 1,2,3,4
+    _meses_trimestre  = list(range((_trimestre_actual-1)*3+1,
+                                   _trimestre_actual*3+1))
+    try:
+        df_mes = pd.read_sql(f"""
+            SELECT
+                rut_proveedor_norm AS rut_normalizado,
+                SUM(CASE WHEN CAST(strftime('%m', fechaaceptacion) AS INT)
+                         IN ({','.join(str(m) for m in _meses_trimestre)})
+                         THEN 1 ELSE 0 END) AS oc_este_trimestre,
+                COUNT(*) AS total_oc_hist
+            FROM clean_ordenes
+            WHERE es_aceptada = 1
+            GROUP BY rut_proveedor_norm
+            HAVING total_oc_hist >= 3
+        """, conn)
+        df_mes["f_mes_activo"] = (
+            df_mes["oc_este_trimestre"] / df_mes["total_oc_hist"] * 100
+        ).clip(0, 100).round(1)
+        df = df.merge(
+            df_mes[["rut_normalizado", "f_mes_activo"]],
+            on="rut_normalizado", how="left"
+        )
+        df["f_mes_activo"] = df["f_mes_activo"].fillna(50)
+        print(f"  f_mes_activo: trimestre {_trimestre_actual} "
+              f"(meses {_meses_trimestre}) — {len(df_mes):,} empresas")
+    except Exception as exc:
+        df["f_mes_activo"] = 50
+        print(f"  f_mes_activo: fallback 50 — {exc}")
+
+    # ── FEATURE 16: Crecimiento OC año a año (0-100) ────────────
     # Empresa que aumenta sus OC necesita más capital de trabajo.
     # Compara OC de los últimos 12 meses vs los 12 meses anteriores.
     try:
@@ -374,6 +443,7 @@ def run():
         "f_licitacion_grande_reciente", "f_concentracion_organismo",
         "f_dias_entre_adj_oc",
         "f_crecimiento_oc_yoy", "f_plazo_pago_cliente",
+        "f_estacionalidad", "f_mes_activo",
     ]
 
     # Solo columnas que existen

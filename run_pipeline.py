@@ -145,12 +145,14 @@ def grupo_transform() -> list:
 
 
 def grupo_score() -> list:
-    """Scoring ponderado y ranking de prospectos."""
-    from models.scoring_prospecto      import run as run_score
+    """Scoring ponderado, ranking de prospectos y sincronización CRM."""
+    from models.scoring_prospecto       import run as run_score
     from models.prediccion_adjudicacion import run as run_pred
+    from ingesta.crm_contactos          import run as run_crm
     return [
         ("models/scoring_prospecto",       run_score),
         ("models/prediccion_adjudicacion", run_pred),
+        ("ingesta/crm_contactos",          run_crm),  # sincroniza CRM con nuevos prospectos
     ]
 
 

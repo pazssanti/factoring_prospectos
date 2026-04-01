@@ -20,7 +20,8 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-from config import TICKET_API, API_BASE_URL, DB_PATH, DATA_DIR, OUTPUT_DIR, init_dirs
+from config import (TICKET_API, API_BASE_URL, DB_PATH, DATA_DIR, OUTPUT_DIR,
+                    init_dirs, TICKET_MINIMO_FACTORING, PRED_WIN_THRESHOLD)
 from utils.helpers import normalizar_rut, mapa_tramo, get_con_reintento
 
 init_dirs()
@@ -242,7 +243,7 @@ def procesar_oc_desde_api_db(conn: sqlite3.Connection,
             FROM raw_ordenes_api o
             WHERE o.fecha_api >= date('now', '-{dias} days')
             AND (LOWER(o.region) LIKE '%lagos%' OR o.region IS NULL)
-            AND CAST(o.monto AS REAL) >= 1000000
+            AND CAST(o.monto AS REAL) >= {TICKET_MINIMO_FACTORING}
             AND CAST(o.monto AS REAL) <= 5000000000
             ORDER BY CAST(o.monto AS REAL) DESC
         """, conn)
@@ -334,7 +335,7 @@ def procesar_oc_desde_db(conn: sqlite3.Connection,
             WHERE o.es_aceptada = 1
             AND o.fechaaceptacion >= date('now', '-{dias} days')
             AND LOWER(o.regionunidadcompra) LIKE '%lagos%'
-            AND o.monto_oc_clp BETWEEN 1000000 AND 5000000000
+            AND o.monto_oc_clp BETWEEN {TICKET_MINIMO_FACTORING} AND 5000000000
             ORDER BY o.monto_oc_clp DESC
         """, conn)
     except Exception as exc:
@@ -542,20 +543,27 @@ def get_adjudicadas_sin_oc(conn: sqlite3.Connection) -> pd.DataFrame:
     except Exception:
         pass
 
-    # ── clean_licitaciones (tiene RUT ganador) — ventana 30 días ─
+    # ── clean_licitaciones (tiene RUT ganador) — ventana 60 días ─
+    # Ventana ampliada a 60 días: algunos organismos tardan más de 30 días
+    # en emitir la OC. La tabla plazos_pago_organismos muestra el plazo real.
     try:
         df_clean = pd.read_sql("""
             SELECT
-                codigoexterno           AS codigo_licitacion,
-                nombre                  AS nombre_licitacion,
-                nombreorganismo         AS organismo,
-                monto_total_adjudicado  AS monto_raw,
-                regionunidad            AS region,
-                fechaadjudicacion       AS fecha_adjudicacion,
-                rut_proveedor_norm      AS rut_proveedor
-            FROM clean_licitaciones
-            WHERE es_adjudicada = 1
-            AND fechaadjudicacion >= date('now', '-30 days')
+                l.codigoexterno           AS codigo_licitacion,
+                l.nombre                  AS nombre_licitacion,
+                l.nombreorganismo         AS organismo,
+                l.codigoorganismo         AS codigo_organismo,
+                l.monto_total_adjudicado  AS monto_raw,
+                l.regionunidad            AS region,
+                l.fechaadjudicacion       AS fecha_adjudicacion,
+                l.rut_proveedor_norm      AS rut_proveedor,
+                COALESCE(p.dias_mediana, 30)   AS plazo_esperado_dias,
+                COALESCE(p.categoria, 'NORMAL') AS categoria_pago
+            FROM clean_licitaciones l
+            LEFT JOIN plazos_pago_organismos p
+                ON l.codigoorganismo = p.codigoorganismo
+            WHERE l.es_adjudicada = 1
+            AND l.fechaadjudicacion >= date('now', '-60 days')
         """, conn)
         if not df_clean.empty:
             frames.append(df_clean)
@@ -602,45 +610,92 @@ def get_adjudicadas_sin_oc(conn: sqlite3.Connection) -> pd.DataFrame:
     return df
 
 
+def get_estado_crm(rut_norm: str, conn: sqlite3.Connection) -> dict:
+    """Obtiene estado CRM del prospecto. Retorna PENDIENTE si no existe."""
+    try:
+        row = conn.execute("""
+            SELECT estado_crm, ejecutivo, notas, fecha_proxima_accion
+            FROM crm_contactos WHERE rut_normalizado = ?
+        """, (rut_norm,)).fetchone()
+        if row:
+            return {
+                "estado_crm":         row[0],
+                "crm_ejecutivo":      row[1],
+                "crm_notas":          row[2],
+                "crm_proxima_accion": row[3],
+            }
+    except Exception:
+        pass
+    return {"estado_crm": "PENDIENTE"}
+
+
 def enriquecer_adjudicadas(df: pd.DataFrame,
                            conn: sqlite3.Connection) -> pd.DataFrame:
-    """Agrega score, nivel, probabilidad y accion_recomendada."""
+    """
+    Agrega score, nivel, probabilidad, plazo esperado del organismo,
+    estado CRM y accion_recomendada.
+    Filtra empresas que ya son CLIENTE o NO_APLICA en el CRM.
+    """
     if df.empty:
         return df
 
     filas = []
     for _, row in df.iterrows():
-        rut_norm  = str(row.get("rut_proveedor") or "").strip()
-        datos_sii = get_datos_sii(rut_norm, conn) if rut_norm else {"en_sii": False}
+        rut_norm   = str(row.get("rut_proveedor") or "").strip()
+        datos_sii  = get_datos_sii(rut_norm, conn) if rut_norm else {"en_sii": False}
         datos_pros = get_datos_prospecto(rut_norm, conn) if rut_norm else {}
+        datos_crm  = get_estado_crm(rut_norm, conn) if rut_norm else {}
 
-        monto_mm = float(row.get("monto_MM", 0) or 0)
-        dias     = int(row.get("dias_desde_adjudicacion", 0) or 0)
-        prob     = datos_pros.get("probabilidad_adjudicacion")
+        # Excluir clientes activos y descartados del CRM
+        estado_crm = datos_crm.get("estado_crm", "PENDIENTE")
+        if estado_crm in ("CLIENTE", "NO_APLICA"):
+            continue
+
+        monto_mm       = float(row.get("monto_MM", 0) or 0)
+        dias           = int(row.get("dias_desde_adjudicacion", 0) or 0)
+        plazo_esp      = float(row.get("plazo_esperado_dias", 30) or 30)
+        cat_pago       = str(row.get("categoria_pago", "NORMAL"))
+        prob           = datos_pros.get("probabilidad_adjudicacion")
+
+        # Urgencia ajustada al plazo real del organismo
+        # Si llevamos > 70% del plazo esperado = LLAMAR HOY (se acaba la ventana)
+        pct_ventana    = (dias / max(plazo_esp, 1)) * 100
+        if pct_ventana >= 70 or (monto_mm > 50 and dias <= 5):
+            accion = "LLAMAR HOY"
+        elif pct_ventana >= 40 or monto_mm > 20 or dias <= 14:
+            accion = "LLAMAR ESTA SEMANA"
+        else:
+            accion = "MONITOREAR"
 
         filas.append({
-            "accion_recomendada":      calcular_accion(monto_mm, dias),
+            "accion_recomendada":      accion,
+            "estado_crm":              estado_crm,
             "codigo_licitacion":       row.get("codigo_licitacion"),
             "nombre_licitacion":       str(row.get("nombre_licitacion", ""))[:60],
             "organismo":               row.get("organismo"),
             "region":                  row.get("region"),
             "monto_licitacion_MM":     round(monto_mm, 2),
             "dias_desde_adjudicacion": dias,
+            "plazo_esperado_dias":     int(plazo_esp),
+            "ventana_restante_dias":   max(0, int(plazo_esp - dias)),
+            "velocidad_organismo":     cat_pago,
             "fecha_adjudicacion":      str(row.get("fecha_adjudicacion", ""))[:10],
             "rut_proveedor":           rut_norm,
             "empresa":                 datos_sii.get("razon_social_sii", ""),
             "ciudad":                  datos_sii.get("comuna_sii", ""),
-            "tamaño_empresa":          datos_sii.get("tramo_ventas", ""),
-            "capital_negativo":        "SÍ" if datos_sii.get("capital_negativo") else "No",
-            "en_sii":                  "SÍ ★" if datos_sii.get("en_sii") else "No",
+            "tamanio_empresa":         datos_sii.get("tramo_ventas", ""),
+            "capital_negativo":        "SI" if datos_sii.get("capital_negativo") else "No",
+            "en_sii":                  "SI *" if datos_sii.get("en_sii") else "No",
             "score_prospecto":         datos_pros.get("score_prospecto"),
             "nivel_prospecto":         datos_pros.get("nivel_prospecto"),
             "P_ganar_licit":           f"{prob:.0f}%" if prob is not None else "-",
+            "crm_ejecutivo":           datos_crm.get("crm_ejecutivo", "-"),
         })
 
     return (
         pd.DataFrame(filas)
-        .sort_values("monto_licitacion_MM", ascending=False)
+        .sort_values(["accion_recomendada", "monto_licitacion_MM"],
+                     ascending=[True, False])
         .reset_index(drop=True)
     )
 
@@ -662,8 +717,9 @@ def get_predecir_ganadores(conn: sqlite3.Connection) -> pd.DataFrame:
          (puede tener lag CSV ~13 días). Umbral: > 60%.
     """
     # ── Fuente 1: licitaciones abiertas reales (API) ──────────
+    _umbral_api = max(40, PRED_WIN_THRESHOLD - 15)  # más permisivo en API
     try:
-        df = pd.read_sql("""
+        df = pd.read_sql(f"""
             SELECT
                 rut_normalizado                         AS rut,
                 razon_social                            AS empresa,
@@ -677,7 +733,7 @@ def get_predecir_ganadores(conn: sqlite3.Connection) -> pd.DataFrame:
                 dias_para_cierre,
                 accion                                  AS accion_recomendada
             FROM predicciones_licitaciones_lagos
-            WHERE P_win >= 40
+            WHERE P_win >= {_umbral_api}
               AND (fecha_cierre IS NULL OR fecha_cierre >= date('now'))
             ORDER BY P_win DESC
         """, conn)
@@ -694,7 +750,7 @@ def get_predecir_ganadores(conn: sqlite3.Connection) -> pd.DataFrame:
 
     # ── Fuente 2: predicciones_activas (fallback, lag CSV) ────
     try:
-        df = pd.read_sql("""
+        df = pd.read_sql(f"""
             SELECT
                 pa.rut_normalizado                          AS rut,
                 pr.razon_social                             AS empresa,
@@ -705,11 +761,16 @@ def get_predecir_ganadores(conn: sqlite3.Connection) -> pd.DataFrame:
                 ROUND(pr.monto_total_oc / 1000000.0, 1)    AS monto_hist_oc_MM,
                 pr.licitaciones_ganadas,
                 pr.ultima_oc,
-                pr.motivo                                   AS argumento
+                pr.motivo                                   AS argumento,
+                COALESCE(c.estado_crm, 'PENDIENTE')        AS estado_crm
             FROM predicciones_activas pa
             JOIN prospectos_rankeados pr
                 ON pa.rut_normalizado = pr.rut_normalizado
-            WHERE pa.probabilidad_adjudicacion > 60
+            LEFT JOIN crm_contactos c
+                ON pa.rut_normalizado = c.rut_normalizado
+            WHERE pa.probabilidad_adjudicacion > {PRED_WIN_THRESHOLD}
+              AND COALESCE(c.estado_crm, 'PENDIENTE')
+                  NOT IN ('CLIENTE', 'NO_APLICA')
             ORDER BY pa.probabilidad_adjudicacion DESC,
                      pr.monto_total_oc DESC
         """, conn)
