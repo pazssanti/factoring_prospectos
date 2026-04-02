@@ -66,6 +66,10 @@ def generar_motivo(row) -> str:
     n_lit = int(row.get("licitaciones_ganadas", 0))
     n_oc  = int(row.get("total_oc", 0))
 
+    tipo_relacion = str(row.get("tipo_relacion_estado", "") or "")
+    if tipo_relacion in ("CONVENIO MARCO", "SUMINISTRO"):
+        motivos.append(tipo_relacion)
+
     if n_lit > 0:
         motivos.append(f"{n_lit} licitaciones ganadas")
     if n_oc > 0:
@@ -100,21 +104,27 @@ def generar_motivo(row) -> str:
 def asignar_ventana_estrategia(row, hoy: pd.Timestamp) -> str:
     """
     Identifica en cuál de las 3 ventanas de oportunidad está la empresa:
-      E1 — Pre-adjudicación: licitación activa donde el modelo predice que
-           esta empresa podría ganar (señal: f_licitacion_grande_reciente
-           o probabilidad_adjudicacion disponible).
-      E2 — Adj→OC: empresa ya adjudicada pero aún sin OC emitida
-           (señal: adjudicación reciente + f_dias_entre_adj_oc alto).
+      E3-CM — Convenio Marco: empresa pre-aprobada que recibe OC
+              continuamente sin licitar cada vez. Flujo de caja recurrente.
+      E1 — Pre-adjudicación: licitación activa donde el modelo predice
+           que esta empresa podría ganar.
+      E2 — Adj→OC: empresa ya adjudicada pero aún sin OC emitida.
       E3 — OC emitida: empresa con OC aceptada en los últimos 30 días.
       --  Sin ventana activa.
     """
-    ultima_oc   = pd.to_datetime(row.get("ultima_oc"),       errors="coerce")
-    ultima_lit  = pd.to_datetime(row.get("ultima_licitacion"), errors="coerce")
-    dias_oc     = int((hoy - ultima_oc).days)  if pd.notna(ultima_oc)  else 9999
-    dias_lit    = int((hoy - ultima_lit).days) if pd.notna(ultima_lit) else 9999
+    ultima_oc     = pd.to_datetime(row.get("ultima_oc"),        errors="coerce")
+    ultima_lit    = pd.to_datetime(row.get("ultima_licitacion"), errors="coerce")
+    dias_oc       = int((hoy - ultima_oc).days)  if pd.notna(ultima_oc)  else 9999
+    dias_lit      = int((hoy - ultima_lit).days) if pd.notna(ultima_lit) else 9999
 
-    lit_grande  = float(row.get("f_licitacion_grande_reciente", 0) or 0)
-    dias_adj_oc = float(row.get("f_dias_entre_adj_oc",          0) or 0)
+    lit_grande    = float(row.get("f_licitacion_grande_reciente", 0) or 0)
+    dias_adj_oc   = float(row.get("f_dias_entre_adj_oc",          0) or 0)
+    tipo_relacion = str(row.get("tipo_relacion_estado", "") or "")
+    oc_30d_monto  = float(row.get("oc_30d_monto", 0) or 0)
+
+    # E3-CM: Convenio Marco con OC activo en los últimos 30 días
+    if tipo_relacion == "CONVENIO MARCO" and oc_30d_monto > 0:
+        return "E3 — Conv.Marco"
 
     # E3: OC emitida muy reciente (empresa acaba de recibir la OC)
     if dias_oc <= 30:
@@ -132,6 +142,10 @@ def asignar_ventana_estrategia(row, hoy: pd.Timestamp) -> str:
     if dias_lit <= 90:
         return "E2 — Adj a OC"
 
+    # CM sin actividad reciente: flujo esperado pero sin OC del último mes
+    if tipo_relacion == "CONVENIO MARCO":
+        return "E3 — Conv.Marco"
+
     return "—"
 
 
@@ -140,16 +154,23 @@ def asignar_urgencia(row, hoy: pd.Timestamp) -> str:
     if "cerrada" in nivel.lower() or "solo sii" in nivel.lower():
         return "BAJA"
 
-    monto       = float(row.get("monto_total_oc", 0) or 0)
-    monto_prom  = float(row.get("monto_prom_oc",  0) or 0)
-    ultima_oc   = pd.to_datetime(row.get("ultima_oc"), errors="coerce")
-    dias_oc     = int((hoy - ultima_oc).days) if pd.notna(ultima_oc) else 9999
-    ventana     = row.get("ventana_estrategia", "—")
-    lit_grande  = float(row.get("f_licitacion_grande_reciente", 0) or 0)
+    monto         = float(row.get("monto_total_oc",  0) or 0)
+    monto_prom    = float(row.get("monto_prom_oc",   0) or 0)
+    oc_30d_monto  = float(row.get("oc_30d_monto",    0) or 0)
+    ultima_oc     = pd.to_datetime(row.get("ultima_oc"), errors="coerce")
+    dias_oc       = int((hoy - ultima_oc).days) if pd.notna(ultima_oc) else 9999
+    ventana       = row.get("ventana_estrategia", "—")
+    lit_grande    = float(row.get("f_licitacion_grande_reciente", 0) or 0)
+    tipo_relacion = str(row.get("tipo_relacion_estado", "") or "")
 
     # Ticket mínimo — sin él no vale la operación de factoring
     if monto_prom > 0 and monto_prom < TICKET_MINIMO_FACTORING:
         return "BAJA"
+
+    # Convenio Marco con volumen activo en los últimos 30 días → ALTA
+    # La empresa está facturando ahora mismo y necesita capital de trabajo
+    if tipo_relacion == "CONVENIO MARCO" and oc_30d_monto >= TICKET_MINIMO_FACTORING:
+        return "ALTA"
 
     # E3 es siempre ALTA: OC acaba de emitirse
     if "E3" in ventana:
@@ -173,11 +194,13 @@ def asignar_urgencia(row, hoy: pd.Timestamp) -> str:
 
 
 def generar_motivo_urgencia(row, hoy: pd.Timestamp) -> str:
-    urgencia   = row.get("urgencia_contacto",        "BAJA")
-    ventana    = row.get("ventana_estrategia",        "—")
-    monto      = float(row.get("monto_total_oc",      0) or 0)
-    monto_prom = float(row.get("monto_prom_oc",       0) or 0)
-    lit_grande = float(row.get("f_licitacion_grande_reciente", 0) or 0)
+    urgencia      = row.get("urgencia_contacto",              "BAJA")
+    ventana       = row.get("ventana_estrategia",             "—")
+    monto         = float(row.get("monto_total_oc",           0) or 0)
+    monto_prom    = float(row.get("monto_prom_oc",            0) or 0)
+    oc_30d_monto  = float(row.get("oc_30d_monto",             0) or 0)
+    lit_grande    = float(row.get("f_licitacion_grande_reciente", 0) or 0)
+    tipo_relacion = str(row.get("tipo_relacion_estado",        "") or "")
 
     ultima_oc  = pd.to_datetime(row.get("ultima_oc"),          errors="coerce")
     dias_oc    = int((hoy - ultima_oc).days)  if pd.notna(ultima_oc)  else None
@@ -185,6 +208,10 @@ def generar_motivo_urgencia(row, hoy: pd.Timestamp) -> str:
     dias_lit   = int((hoy - ultima_lit).days) if pd.notna(ultima_lit) else None
 
     if urgencia == "ALTA":
+        # Convenio Marco activo: OC fluyen sin licitación previa
+        if "Conv.Marco" in ventana and oc_30d_monto > 0:
+            return (f"CONVENIO MARCO — ${oc_30d_monto/1_000_000:.1f}M en OC "
+                    f"últimos 30 días — contactar HOY (flujo recurrente)")
         if "E3" in ventana and dias_oc is not None:
             return (f"OC emitida hace {dias_oc}d — "
                     f"llamar HOY (Estrategia 3: OC emitida)")
@@ -198,6 +225,9 @@ def generar_motivo_urgencia(row, hoy: pd.Timestamp) -> str:
         return "Nivel 1 — contactar hoy"
 
     if urgencia == "MEDIA":
+        if tipo_relacion == "SUMINISTRO":
+            return (f"SUMINISTRO periódico — OC regulares bajo el mismo contrato "
+                    f"— ${monto/1_000_000:.1f}M total (Estrategia 3)")
         if "E1" in ventana:
             return "Predice alta P(ganar licit.) — contactar antes del cierre (Estrategia 1)"
         if "E2" in ventana and dias_lit is not None:

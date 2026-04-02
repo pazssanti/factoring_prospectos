@@ -82,14 +82,43 @@ def run():
 
     oc_acep = df_oc[df_oc["es_aceptada"] == 1].copy()
 
+    # Volumen últimos 30 días (señal clave para Convenio Marco)
+    oc_acep["_fecha_dt"] = pd.to_datetime(
+        oc_acep["fechaaceptacion"], errors="coerce"
+    )
+    _hoy   = pd.Timestamp("today")
+    _30d   = _hoy - pd.Timedelta(days=30)
+    _365d  = _hoy - pd.Timedelta(days=365)
+    oc_30d = oc_acep[oc_acep["_fecha_dt"] >= _30d]
+    oc_12m = oc_acep[oc_acep["_fecha_dt"] >= _365d]
+
+    hist_oc_30d = oc_30d.groupby("rut_proveedor_norm").agg(
+        oc_30d_count = ("codigo",       "nunique"),
+        oc_30d_monto = ("monto_oc_clp", "sum"),
+    ).reset_index()
+
+    hist_oc_12m = oc_12m.groupby("rut_proveedor_norm").agg(
+        oc_12m_count = ("codigo",       "nunique"),
+        oc_12m_monto = ("monto_oc_clp", "sum"),
+    ).reset_index()
+
     hist_oc = oc_acep.groupby("rut_proveedor_norm").agg(
-        total_oc        = ("codigo", "nunique"),
-        monto_total_oc  = ("monto_oc_clp", "sum"),
-        monto_prom_oc   = ("monto_oc_clp", "mean"),
-        primera_oc      = ("fechaaceptacion", "min"),
-        ultima_oc       = ("fechaaceptacion", "max"),
+        total_oc        = ("codigo",                 "nunique"),
+        monto_total_oc  = ("monto_oc_clp",           "sum"),
+        monto_prom_oc   = ("monto_oc_clp",           "mean"),
+        primera_oc      = ("fechaaceptacion",        "min"),
+        ultima_oc       = ("fechaaceptacion",        "max"),
         organismos_oc   = ("codigoorganismopublico", "nunique"),
     ).reset_index()
+
+    hist_oc = (hist_oc
+               .merge(hist_oc_30d, on="rut_proveedor_norm", how="left")
+               .merge(hist_oc_12m, on="rut_proveedor_norm", how="left"))
+    hist_oc[["oc_30d_count","oc_30d_monto",
+             "oc_12m_count","oc_12m_monto"]] = (
+        hist_oc[["oc_30d_count","oc_30d_monto",
+                 "oc_12m_count","oc_12m_monto"]].fillna(0)
+    )
 
     print(f"  Proveedores con licitaciones: "
           f"{len(hist_lit):,}")
@@ -101,6 +130,61 @@ def run():
         hist_lit, hist_oc,
         on="rut_proveedor_norm", how="outer"
     ).fillna(0)
+
+    # ── Ratio OC / licitación ─────────────────────────────────
+    # Ratio alto (>8) → Convenio Marco o suministro periódico.
+    # Ratio bajo (≤2) → licitación tradicional.
+    # Este dato cambia radicalmente la estrategia de prospección.
+    hist_mp["ratio_oc_licitacion"] = (
+        hist_mp["total_oc"]
+        / hist_mp["licitaciones_ganadas"].clip(lower=1)
+    ).round(1)
+
+    # ── % OC de Convenio Marco ────────────────────────────────
+    # Cuántas OC de la empresa vienen de un Convenio Marco.
+    # Fuente: join clean_ordenes × clean_licitaciones por tipo.
+    # LIMITACIÓN: solo refleja las licitaciones históricas del CSV.
+    # Las OC de CM puro (sin licitación previa en nuestra DB) no
+    # quedan capturadas aquí; el ratio alto las detecta igual.
+    try:
+        df_cm = pd.read_sql("""
+            SELECT o.rut_proveedor_norm,
+                   COUNT(DISTINCT o.codigo) AS n_oc_cm
+            FROM   clean_ordenes o
+            JOIN   clean_licitaciones l
+                ON o.codigolicitacion = l.codigoexterno
+            WHERE  (l.tipo LIKE '%Convenio%'
+                    OR LOWER(l.nombre) LIKE '%convenio marco%')
+              AND  o.es_aceptada = 1
+            GROUP BY o.rut_proveedor_norm
+        """, conn)
+        hist_mp = hist_mp.merge(df_cm, on="rut_proveedor_norm", how="left")
+        hist_mp["n_oc_cm"] = hist_mp["n_oc_cm"].fillna(0)
+        hist_mp["pct_oc_convenio_marco"] = (
+            hist_mp["n_oc_cm"]
+            / hist_mp["total_oc"].clip(lower=1) * 100
+        ).round(1)
+        print(f"  Proveedores con OC de CM: "
+              f"{(hist_mp['n_oc_cm'] > 0).sum():,}")
+    except Exception as exc:
+        hist_mp["n_oc_cm"] = 0
+        hist_mp["pct_oc_convenio_marco"] = 0.0
+        print(f"  AVISO pct_oc_convenio_marco: {exc}")
+
+    # ── Tipo de relación empresa-Estado ──────────────────────
+    # Etiqueta legible para el equipo comercial.
+    def _tipo_relacion(row):
+        pct_cm = float(row.get("pct_oc_convenio_marco", 0) or 0)
+        ratio  = float(row.get("ratio_oc_licitacion",   0) or 0)
+        if pct_cm >= 50 or ratio >= 8:
+            return "CONVENIO MARCO"
+        if ratio >= 3:
+            return "SUMINISTRO"
+        if row.get("total_oc", 0) > 0:
+            return "LICITACION"
+        return "SIN OC"
+
+    hist_mp["tipo_relacion_estado"] = hist_mp.apply(_tipo_relacion, axis=1)
 
     # ── Cruzar con SII Los Lagos vigentes ────────────────────
     print("Cruzando con SII...")
@@ -132,6 +216,8 @@ def run():
         "monto_total_adjudicado", "pct_adjudicacion",
         "total_oc", "monto_total_oc", "monto_prom_oc",
         "organismos_distintos", "organismos_oc",
+        "ratio_oc_licitacion", "n_oc_cm", "pct_oc_convenio_marco",
+        "oc_30d_count", "oc_30d_monto", "oc_12m_count", "oc_12m_monto",
     ]
     for col in cols_num:
         if col in df_resultado.columns:

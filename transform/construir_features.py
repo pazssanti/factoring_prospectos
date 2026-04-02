@@ -246,7 +246,35 @@ def run():
         df["f_concentracion_organismo"] = 50
         print(f"  f_concentracion_organismo: fallback 50 — {exc}")
 
-    # ── FEATURE 14: Estacionalidad presupuestaria (0-100) ────────
+    # ── FEATURE 14: Ratio OC / licitación (0-100) ───────────────
+    # Revela el TIPO de relación empresa-Estado:
+    #   CONVENIO MARCO (ratio ≥ 8): empresa pre-aprobada, OC fluyen sin
+    #     licitar cada vez. Facturando recurrentemente. Score alto porque
+    #     la necesidad de capital de trabajo es CONSTANTE y predecible.
+    #   SUMINISTRO (ratio 3-8): contrato de provisión periódica. OC llegan
+    #     con regularidad bajo el mismo contrato. También muy atractivo.
+    #   LICITACIÓN TRADICIONAL (ratio < 3): gana licitaciones puntuales.
+    #     OC llegan en picos. Menos predecible pero tickets más grandes.
+    #
+    # ¿Con qué datos?
+    # ratio_oc_licitacion viene de cruzar_fuentes.py (ya calculado).
+    # Disponible con los datos actuales del CSV histórico.
+    def _score_ratio(ratio):
+        if ratio == 0:    return 0
+        if ratio >= 10:   return 100   # CM claro
+        if ratio >= 6:    return 88
+        if ratio >= 3:    return 72    # suministro
+        if ratio >= 1.5:  return 50    # licitación con varios ítems
+        return 30                      # licitación 1:1
+
+    df["f_ratio_oc_licitacion"] = (
+        df["ratio_oc_licitacion"].fillna(0).apply(_score_ratio)
+    )
+    print(f"  f_ratio_oc_licitacion: CM={( df['ratio_oc_licitacion'].fillna(0) >= 8).sum():,} "
+          f"| suministro={((df['ratio_oc_licitacion'].fillna(0) >= 3) & (df['ratio_oc_licitacion'].fillna(0) < 8)).sum():,} "
+          f"| tradicional={((df['ratio_oc_licitacion'].fillna(0) > 0) & (df['ratio_oc_licitacion'].fillna(0) < 3)).sum():,}")
+
+    # ── FEATURE 15: Estacionalidad presupuestaria (0-100) ────────
     # El presupuesto público chileno se concentra en ciertos meses:
     #   Oct-Dic: cierre de año presupuestario → máximo gasto (score 100)
     #   Mar-Abr: inicio de proyectos post-verano → alto (75)
@@ -434,6 +462,9 @@ def run():
         "ultima_oc", "ultima_licitacion",
         "organismos_distintos", "organismos_oc",
         "rubro_frecuente",
+        "ratio_oc_licitacion", "tipo_relacion_estado",
+        "pct_oc_convenio_marco",
+        "oc_30d_monto", "oc_12m_monto",
     ]
     cols_features = [
         "f_historial", "f_tramo_ventas", "f_capital_negativo",
@@ -441,6 +472,7 @@ def run():
         "f_volumen_oc", "f_oc_reciente", "f_monto_oc",
         "f_tasa_adjudicacion", "f_especializacion_rubro",
         "f_licitacion_grande_reciente", "f_concentracion_organismo",
+        "f_ratio_oc_licitacion",
         "f_dias_entre_adj_oc",
         "f_crecimiento_oc_yoy", "f_plazo_pago_cliente",
         "f_estacionalidad", "f_mes_activo",

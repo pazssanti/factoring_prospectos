@@ -94,17 +94,16 @@ CRM_ESTADOS = [
 ]
 
 # ─────────────────────────────────────────────────────────────
-# SCORING — Pesos por feature (14 features, suma = 1.0)
+# SCORING — Pesos por feature (15 features, suma = 1.0)
 #
-# v3 respecto a v2:
-#  - f_concentracion_organismo NUEVO 4% (riesgo: empresa mono-cliente)
-#  - f_estacionalidad          NUEVO 3% (mes con mayor gasto público)
-#  - f_historial     reducido  15% → 12%
-#  - f_tasa_adj      reducido  7%  → 5%
-#  - f_crecimiento   reducido  7%  → 5%
+# v4 respecto a v3:
+#  - f_ratio_oc_licitacion NUEVO 4% (CM vs suministro vs licitación)
+#  - f_historial     reducido  12% → 10%
+#  - f_antiguedad    reducido  3%  → 2%
+#  - f_rubro_prioritario reducido 3% → 2%
 # ─────────────────────────────────────────────────────────────
 PESOS_SCORING = {
-    "f_historial":                  0.12,
+    "f_historial":                  0.10,
     "f_tramo_ventas":               0.10,
     "f_capital_negativo":           0.07,
     "f_monto_oc":                   0.14,
@@ -114,10 +113,11 @@ PESOS_SCORING = {
     "f_tasa_adjudicacion":          0.05,
     "f_crecimiento_oc_yoy":         0.05,
     "f_plazo_pago_cliente":         0.05,
-    "f_concentracion_organismo":    0.04,  # NUEVO — riesgo diversificación
-    "f_estacionalidad":             0.03,  # NUEVO — mes de mayor gasto público
-    "f_antiguedad":                 0.03,
-    "f_rubro_prioritario":          0.03,
+    "f_concentracion_organismo":    0.04,
+    "f_ratio_oc_licitacion":        0.04,  # NUEVO — CM vs suministro vs tradicional
+    "f_estacionalidad":             0.03,
+    "f_antiguedad":                 0.02,
+    "f_rubro_prioritario":          0.02,
 }
 
 # ─────────────────────────────────────────────────────────────
