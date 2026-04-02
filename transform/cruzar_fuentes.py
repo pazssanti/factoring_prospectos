@@ -75,7 +75,12 @@ def run():
     # en el CSV histórico, todas son adjudicadas por el filtro
     # de ingesta, así que total = ganadas en este caso
     hist_lit["total_licitaciones"] = hist_lit["licitaciones_ganadas"]
-    hist_lit["pct_adjudicacion"] = 100.0  # todas adjudicadas en CSV
+    # NOTA: los CSV de datos.chilecompra.cl contienen SOLO licitaciones
+    # adjudicadas (el Estado publica el resultado, no las participaciones
+    # sin éxito). Por eso este campo siempre vale 100% — es un artefacto
+    # de la fuente, no la tasa de éxito real del proveedor.
+    # La tasa real se calcula desde OCDS en f_tasa_adjudicacion (scoring).
+    hist_lit["pct_adjudicacion_csv"] = 100.0
 
     # ── Historial OC por proveedor (CORREGIDO) ────────────────
     print("Calculando historial órdenes de compra...")
@@ -213,7 +218,7 @@ def run():
     # Rellenar NaN en columnas numéricas
     cols_num = [
         "licitaciones_ganadas", "total_licitaciones",
-        "monto_total_adjudicado", "pct_adjudicacion",
+        "monto_total_adjudicado", "pct_adjudicacion_csv",
         "total_oc", "monto_total_oc", "monto_prom_oc",
         "organismos_distintos", "organismos_oc",
         "ratio_oc_licitacion", "n_oc_cm", "pct_oc_convenio_marco",

@@ -174,21 +174,31 @@ def agregar_features_proveedor(df: pd.DataFrame, conn: sqlite3.Connection) -> pd
     con_sii = int(df["tramo_ventas"].notna().sum())
     print(f"  Cobertura SII: {con_sii:,} de {len(df):,} filas ({100 * con_sii / len(df):.0f}%)")
 
-    # ratio_oc_licitacion: relacion historica OC/licitacion por empresa
-    # Disponible para proveedores de Los Lagos en clean_proveedores
+    # ratio_oc_licitacion: OC aceptadas / licitaciones ganadas por empresa.
+    # Se calcula desde clean_ordenes x clean_licitaciones (cobertura nacional)
+    # en vez de clean_proveedores (solo Los Lagos SII).
+    # Esto cubre cualquier empresa que opere en el mercado público de Los Lagos
+    # sin importar su región de registro, subiendo la cobertura del ~16% al ~60-70%.
     try:
         df_ratio = pd.read_sql("""
-            SELECT rut_normalizado,
-                   COALESCE(ratio_oc_licitacion, 0) AS ratio_oc_licitacion
-            FROM clean_proveedores
-            WHERE rut_normalizado IS NOT NULL
+            SELECT
+                o.rut_proveedor_norm AS rut_normalizado,
+                CAST(COUNT(DISTINCT o.codigo) AS REAL)
+                    / MAX(CAST(COUNT(DISTINCT l.codigoexterno) AS REAL), 1.0)
+                    AS ratio_oc_licitacion
+            FROM clean_ordenes o
+            LEFT JOIN clean_licitaciones l
+                ON o.rut_proveedor_norm = l.rut_proveedor_norm
+               AND l.es_adjudicada = 1
+            WHERE o.es_aceptada = 1
+            GROUP BY o.rut_proveedor_norm
         """, conn)
         df_ratio = df_ratio.drop_duplicates("rut_normalizado")
         df = df.merge(df_ratio, on="rut_normalizado", how="left")
         df["ratio_oc_licitacion"] = df["ratio_oc_licitacion"].fillna(0)
         con_ratio = int((df["ratio_oc_licitacion"] > 0).sum())
-        print(f"  ratio_oc_licitacion: {con_ratio:,} empresas con ratio > 0 "
-              f"({100 * con_ratio / len(df):.0f}%)")
+        print(f"  ratio_oc_licitacion: {con_ratio:,} filas con ratio > 0 "
+              f"({100 * con_ratio / len(df):.0f}%) — calculo nacional")
     except Exception as exc:
         df["ratio_oc_licitacion"] = 0.0
         print(f"  ratio_oc_licitacion: fallback 0 — {exc}")
