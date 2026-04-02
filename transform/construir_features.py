@@ -108,8 +108,10 @@ def run():
         es_rubro_prioritario
     )
 
-    # ── FEATURE 6: Volumen OC (0-100) ─────────────────────────
-    # Escala logarítmica sobre número de OC
+    # ── FEATURE 6: Volumen OC (0-100) — peso 0% en PESOS_SCORING ──
+    # Calculada pero excluida del scoring final porque captura lo mismo
+    # que f_monto_oc (cantidad vs monto promedio — altamente correladas).
+    # Se mantiene como columna de diagnóstico en features_prospectos.
     df["f_volumen_oc"] = np.where(
         df["total_oc"] == 0, 0,
         np.clip(20 * np.log10(df["total_oc"].clip(1)), 0, 100)
@@ -162,8 +164,11 @@ def run():
         df["f_tasa_adjudicacion"] = 50
         print(f"  f_tasa_adjudicacion: fallback 50 — {exc}")
 
-    # ── FEATURE 10: Especialización por rubro (0-100) ──────────
-    # % de OC concentradas en el rubro principal de la empresa
+    # ── FEATURE 10: Especialización por rubro (0-100) — peso 0% ───
+    # % de OC concentradas en el rubro principal de la empresa.
+    # Calculada como diagnóstico; no tiene peso en PESOS_SCORING porque
+    # requeriría validación empírica (sin CRM no se puede calibrar su
+    # contribución a conversión). Disponible para análisis ad-hoc.
     try:
         df_rubro_raw = pd.read_sql("""
             SELECT rut_proveedor_norm AS rut_normalizado,
@@ -303,11 +308,19 @@ def run():
     }
     df["f_estacionalidad"] = _score_mes.get(_mes_actual, 50)
     print(f"  f_estacionalidad: mes={_mes_actual} → score={_score_mes.get(_mes_actual,50)}")
+    # NOTA: f_estacionalidad es la misma para TODAS las empresas en un run.
+    # No discrimina entre prospectos — solo escala el score general según
+    # el mes de ejecución (scores más altos en Nov cuando el Estado gasta más).
+    # El ranking RELATIVO entre empresas no cambia. El ranking ABSOLUTO sí
+    # (sirve para que el GG sepa que Nov es el mejor mes para prospectar).
+    # Para discriminación empresa-específica usar f_mes_activo (siguiente).
 
     # ── FEATURE 15: Actividad histórica en el trimestre actual (0-100) ──
     # ¿Esta empresa suele tener OC en los meses del trimestre actual?
     # Alta concentración histórica en el trimestre actual = mayor probabilidad
     # de que necesite factoring ahora.
+    # NOTA: Peso 0% en PESOS_SCORING — calculada como diagnóstico.
+    # Para agregar al scoring calibrar con datos CRM de conversión primero.
     #
     # ¿Con qué datos?
     # Requiere fechas de OC históricas (clean_ordenes). Disponible.

@@ -514,11 +514,16 @@ def predecir_activas(conn: sqlite3.Connection, clf=None):
         return
 
     # Empresas con historial en Mercado Público
+    # Se incluye region_empresa real (desde SII) para que mismo_region
+    # refleje si la empresa es local vs foránea, tal como en el training.
+    # Los prospectos son todos de Los Lagos pero la señal es correcta:
+    # mismo_region=1 para empresas locales, que históricamente ganan más.
     try:
         df_emp = pd.read_sql("""
             SELECT p.rut_normalizado, p.tramo_ventas,
                    p.tramo_capital_negativo, p.licitaciones_ganadas,
-                   COALESCE(f.ratio_oc_licitacion, 0) AS ratio_oc_licitacion
+                   COALESCE(f.ratio_oc_licitacion, 0) AS ratio_oc_licitacion,
+                   COALESCE(f.region, 'LOS LAGOS') AS region_empresa
             FROM prospectos_rankeados p
             LEFT JOIN features_prospectos f
                 ON p.rut_normalizado = f.rut_normalizado
@@ -530,7 +535,8 @@ def predecir_activas(conn: sqlite3.Connection, clf=None):
         df_emp = pd.read_sql("""
             SELECT rut_normalizado, tramo_ventas,
                    tramo_capital_negativo, licitaciones_ganadas,
-                   COALESCE(ratio_oc_licitacion, 0) AS ratio_oc_licitacion
+                   COALESCE(ratio_oc_licitacion, 0) AS ratio_oc_licitacion,
+                   COALESCE(region, 'LOS LAGOS') AS region_empresa
             FROM features_prospectos
             WHERE aparece_en_mp = 1
             LIMIT 200
@@ -544,7 +550,10 @@ def predecir_activas(conn: sqlite3.Connection, clf=None):
     df_cross = df_act.assign(_key=1).merge(
         df_emp.assign(_key=1), on="_key"
     ).drop(columns="_key")
-    df_cross["region_empresa"] = "LOS LAGOS"
+    # region_empresa viene de features_prospectos (SII real).
+    # Si falta, default a LOS LAGOS (prospectos son todos de la región).
+    if "region_empresa" not in df_cross.columns:
+        df_cross["region_empresa"] = "LOS LAGOS"
     # participaciones_org: usar licitaciones_ganadas como proxy de experiencia
     if "participaciones_org" not in df_cross.columns:
         df_cross["participaciones_org"] = df_cross.get(

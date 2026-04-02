@@ -118,7 +118,6 @@ def asignar_ventana_estrategia(row, hoy: pd.Timestamp) -> str:
     dias_lit      = int((hoy - ultima_lit).days) if pd.notna(ultima_lit) else 9999
 
     lit_grande    = float(row.get("f_licitacion_grande_reciente", 0) or 0)
-    dias_adj_oc   = float(row.get("f_dias_entre_adj_oc",          0) or 0)
     tipo_relacion = str(row.get("tipo_relacion_estado", "") or "")
     oc_30d_monto  = float(row.get("oc_30d_monto", 0) or 0)
 
@@ -130,17 +129,16 @@ def asignar_ventana_estrategia(row, hoy: pd.Timestamp) -> str:
     if dias_oc <= 30:
         return "E3 — OC emitida"
 
-    # E2: Licitación reciente adjudicada y brecha adj→OC corta (alta prob)
-    if dias_lit <= 60 and dias_adj_oc >= 70:
+    # E2: Licitación reciente + sin OC nueva todavía = en la ventana adj→OC.
+    # Condición: ganó licitación en los últimos 90 días Y no llegó OC en
+    # los últimos 30 días. El ciclo normal adj→OC es 20-60 días en Chile,
+    # así que dias_oc > 30 con licitación reciente indica que la OC está en camino.
+    if dias_lit <= 90 and dias_oc > 30:
         return "E2 — Adj a OC"
 
     # E1: Licitación grande reciente o predicción de win activa
     if lit_grande >= 100 or dias_lit <= 30:
         return "E1 — Pre-adjudicación"
-
-    # E2 ampliado: licitación en los últimos 90 días
-    if dias_lit <= 90:
-        return "E2 — Adj a OC"
 
     # CM sin actividad reciente: flujo esperado pero sin OC del último mes
     if tipo_relacion == "CONVENIO MARCO":
