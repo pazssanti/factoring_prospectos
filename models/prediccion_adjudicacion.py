@@ -36,6 +36,7 @@ FEATURES_MODELO = [
     "especializacion_tipo",      # fracción bids empresa en este tipo
     "participaciones_org_log",   # log(bids previos empresa×organismo) — experiencia
     "es_convenio_marco",         # dinámica distinta en Convenios Marco
+    "ratio_oc_licitacion",       # ratio OC/licitacion empresa — proxy de CM/suministro
     # ELIMINADO: tiene_capital_negativo — capital negativo no predice quién gana
     # una licitación; es señal de necesidad de factoring (scoring), no de capacidad
     # de ganar (predicción). Su inclusión generaba ruido en el modelo.
@@ -125,6 +126,15 @@ def _aplicar_features(df: pd.DataFrame) -> pd.DataFrame:
         df.get("es_convenio_marco", pd.Series(0, index=idx)),
         errors="coerce"
     ).fillna(0).astype(int)
+
+    # 10. ratio_oc_licitacion — OC recibidas / licitaciones ganadas
+    # Empresas con ratio alto ya tienen relación establecida (CM o suministro);
+    # tienden a ganar con mayor consistencia en el mismo organismo.
+    # Default 0 para proveedores sin historial en clean_proveedores.
+    out["ratio_oc_licitacion"] = pd.to_numeric(
+        df.get("ratio_oc_licitacion", pd.Series(0.0, index=idx)),
+        errors="coerce"
+    ).fillna(0).clip(0, 200)
 
     return out[FEATURES_MODELO]
 
@@ -506,17 +516,21 @@ def predecir_activas(conn: sqlite3.Connection, clf=None):
     # Empresas con historial en Mercado Público
     try:
         df_emp = pd.read_sql("""
-            SELECT rut_normalizado, tramo_ventas,
-                   tramo_capital_negativo, licitaciones_ganadas
-            FROM prospectos_rankeados
-            WHERE nivel IN ('1 - Contactar hoy', '2 - Contactar esta semana')
-            ORDER BY score DESC
+            SELECT p.rut_normalizado, p.tramo_ventas,
+                   p.tramo_capital_negativo, p.licitaciones_ganadas,
+                   COALESCE(f.ratio_oc_licitacion, 0) AS ratio_oc_licitacion
+            FROM prospectos_rankeados p
+            LEFT JOIN features_prospectos f
+                ON p.rut_normalizado = f.rut_normalizado
+            WHERE p.nivel IN ('1 - Contactar hoy', '2 - Contactar esta semana')
+            ORDER BY p.score DESC
             LIMIT 200
         """, conn)
     except Exception:
         df_emp = pd.read_sql("""
             SELECT rut_normalizado, tramo_ventas,
-                   tramo_capital_negativo, licitaciones_ganadas
+                   tramo_capital_negativo, licitaciones_ganadas,
+                   COALESCE(ratio_oc_licitacion, 0) AS ratio_oc_licitacion
             FROM features_prospectos
             WHERE aparece_en_mp = 1
             LIMIT 200

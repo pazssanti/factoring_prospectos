@@ -58,6 +58,11 @@ def preparar_hoja(df: pd.DataFrame) -> pd.DataFrame:
         "crm_ultimo_contacto":       "Ultimo contacto",
         "crm_proxima_accion":        "Proxima accion",
         "crm_notas":                 "Notas CRM",
+        "tipo_relacion_estado":      "Tipo relacion Estado",
+        "oc_30d_monto":              "OC ultimos 30d ($)",
+        "oc_12m_monto":              "OC ultimos 12m ($)",
+        "pct_oc_convenio_marco":     "% OC Conv.Marco",
+        "ratio_oc_licitacion":       "Ratio OC/Licit",
         "motivo":                    "Argumento de contacto",
         "motivo_urgencia":           "Por que ahora",
     }
@@ -66,7 +71,8 @@ def preparar_hoja(df: pd.DataFrame) -> pd.DataFrame:
     df_out = df[list(cols_map.keys())].copy()
     df_out = df_out.rename(columns=cols_map)
 
-    for col in ["Monto OC", "Monto prom OC"]:
+    for col in ["Monto OC", "Monto prom OC",
+                "OC ultimos 30d ($)", "OC ultimos 12m ($)"]:
         if col in df_out.columns:
             df_out[col] = df_out[col].apply(formatear_monto)
 
@@ -650,8 +656,9 @@ def run():
 
         etiquetas_ventana = {
             "E1 — Pre-adjudicación": "Estrategia 1 — Contactar antes cierre",
-            "E2 — Adj a OC":         "Estrategia 2 — Adj→OC (ventana clave)",
+            "E2 — Adj a OC":         "Estrategia 2 — Adj->OC (ventana clave)",
             "E3 — OC emitida":       "Estrategia 3 — OC emitida esta semana",
+            "E3 — Conv.Marco":       "Estrategia 3-CM — Convenio Marco activo",
             "—":                     "Sin ventana activa",
         }
         for k, label in etiquetas_ventana.items():
@@ -667,18 +674,21 @@ def run():
         for ciudad, cnt in top.items():
             filas.append((f"  {ciudad}", str(cnt)))
 
-        filas += [("", ""), ("PESOS DEL SCORE (v2)", "")]
+        filas += [("", ""), ("PESOS DEL SCORE (v4 — 15 features)", "")]
         nombres_peso = {
             "f_historial":                  "Historial adjudicaciones",
             "f_tramo_ventas":               "Tramo ventas SII",
             "f_capital_negativo":           "Capital negativo (tension)",
             "f_monto_oc":                   "Monto promedio OC",
             "f_oc_reciente":                "OC reciente (<12 meses)",
-            "f_dias_entre_adj_oc":          "Velocidad adj→OC empresa",
+            "f_dias_entre_adj_oc":          "Velocidad adj->OC empresa",
             "f_licitacion_grande_reciente": "Licitacion grande reciente",
             "f_tasa_adjudicacion":          "Tasa de adjudicacion OCDS",
             "f_crecimiento_oc_yoy":         "Crecimiento OC anual",
             "f_plazo_pago_cliente":         "Velocidad pago organismos",
+            "f_concentracion_organismo":    "Concentracion por organismo",
+            "f_ratio_oc_licitacion":        "Ratio OC/Licitacion (CM)",
+            "f_estacionalidad":             "Estacionalidad presupuestaria",
             "f_antiguedad":                 "Antiguedad empresa",
             "f_rubro_prioritario":          "Rubro prioritario",
         }
@@ -689,7 +699,7 @@ def run():
         secciones = {
             "UNIVERSO ANALIZADO", "RESULTADOS DE PROSPECCIÓN",
             "DISTRIBUCIÓN POR ESTRATEGIA (Niv 1+2)",
-            "TOP CIUDADES (Nivel 1+2)", "PESOS DEL SCORE (v2)",
+            "TOP CIUDADES (Nivel 1+2)", "PESOS DEL SCORE (v4 — 15 features)",
         }
 
         for i, (et, val) in enumerate(filas):

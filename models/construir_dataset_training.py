@@ -144,13 +144,17 @@ def agregar_features_proveedor(df: pd.DataFrame, conn: sqlite3.Connection) -> pd
     """
     Une tramo_ventas y tramo_capital_negativo desde raw_empresas_sii (todo Chile),
     usando el año más reciente disponible por RUT.
+    También agrega ratio_oc_licitacion desde clean_proveedores (Los Lagos).
 
-    Por qué raw_empresas_sii y no features_prospectos:
+    Por qué raw_empresas_sii y no features_prospectos para SII:
       features_prospectos fue construido enfocado en Los Lagos, cubriendo
       solo ~17% de los providers del training_dataset. Los proveedores que
       ganan licitaciones de Los Lagos pueden ser de cualquier región (RM,
       Bio-Bío, Valparaíso, etc.) y sus datos SII están en raw_empresas_sii
       nacional. Este join sube la cobertura al ~60-70%.
+
+    ratio_oc_licitacion viene de clean_proveedores (solo Los Lagos). Para
+    proveedores de otras regiones el valor queda en 0 (default conservador).
     """
     print("  Uniendo features SII nacionales (raw_empresas_sii, ano mas reciente)...")
     df_sii = pd.read_sql("""
@@ -169,6 +173,26 @@ def agregar_features_proveedor(df: pd.DataFrame, conn: sqlite3.Connection) -> pd
     df = df.merge(df_sii, on="rut_normalizado", how="left")
     con_sii = int(df["tramo_ventas"].notna().sum())
     print(f"  Cobertura SII: {con_sii:,} de {len(df):,} filas ({100 * con_sii / len(df):.0f}%)")
+
+    # ratio_oc_licitacion: relacion historica OC/licitacion por empresa
+    # Disponible para proveedores de Los Lagos en clean_proveedores
+    try:
+        df_ratio = pd.read_sql("""
+            SELECT rut_normalizado,
+                   COALESCE(ratio_oc_licitacion, 0) AS ratio_oc_licitacion
+            FROM clean_proveedores
+            WHERE rut_normalizado IS NOT NULL
+        """, conn)
+        df_ratio = df_ratio.drop_duplicates("rut_normalizado")
+        df = df.merge(df_ratio, on="rut_normalizado", how="left")
+        df["ratio_oc_licitacion"] = df["ratio_oc_licitacion"].fillna(0)
+        con_ratio = int((df["ratio_oc_licitacion"] > 0).sum())
+        print(f"  ratio_oc_licitacion: {con_ratio:,} empresas con ratio > 0 "
+              f"({100 * con_ratio / len(df):.0f}%)")
+    except Exception as exc:
+        df["ratio_oc_licitacion"] = 0.0
+        print(f"  ratio_oc_licitacion: fallback 0 — {exc}")
+
     return df
 
 
