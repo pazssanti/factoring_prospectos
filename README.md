@@ -51,4 +51,30 @@ El proyecto implementa un sistema de decisión basado en datos históricos:
 
 ---
 
-##
+## ⚙️ Configuración e Instalación
+
+1.  **Clonar el repositorio:**
+    ```bash
+    git clone [https://github.com/pazssanti/factoring_prospectos.git](https://github.com/pazssanti/factoring_prospectos.git)
+    ```
+2.  **Instalar dependencias:**
+    ```bash
+    pip install -r requirements.txt
+    ```
+3.  **Configurar entorno:**
+    Editar `config.py` con las credenciales de API de Mercado Público y rutas locales.
+4.  **Ejecutar Pipeline:**
+    ```bash
+    python run_pipeline.py
+    ```
+
+---
+
+## 📫 Contacto
+
+[![LinkedIn](https://img.shields.io/badge/LinkedIn-mpaz--santi-0A66C2?style=flat&logo=linkedin)](https://linkedin.com/in/mpaz-santi)
+[![Email](https://img.shields.io/badge/Email-pazssanti@gmail.com-D14836?style=flat&logo=gmail)](mailto:pazssanti@gmail.com)
+[![GitHub](https://img.shields.io/badge/GitHub-pazssanti-181717?style=flat&logo=github)](https://github.com/pazssanti)
+
+---
+*Código fuente de autoría propia - María Paz Santibáñez Silva (2025)*
